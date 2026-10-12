@@ -51,7 +51,11 @@ def parse_prefix(name: str) -> tuple[int, str] | None:
 def remove_whole_word(name: str, word: str) -> str:
     if not word:
         raise ValueError("word must not be empty")
-    pattern = re.compile(rf"\b{re.escape(word)}\b", flags=re.IGNORECASE)
+    # \b only helps next to word chars. A trailing "-" (as in "Grimes -") is
+    # non-word, so a final \b never matches before the following space.
+    left = r"\b" if re.match(r"\w", word[0]) else ""
+    right = r"\b" if re.match(r"\w", word[-1]) else ""
+    pattern = re.compile(rf"{left}{re.escape(word)}{right}", flags=re.IGNORECASE)
     return clean_spaces(pattern.sub("", name))
 
 
@@ -186,18 +190,19 @@ def apply_changes(changes: list[PlannedChange]) -> None:
     for change in changes:
         pid_lit = _as_literal(change.track.persistent_id)
         name_lit = _as_literal(change.new_name)
-        lines.append("  set matched to false")
+        # Avoid Music dictionary terms (e.g. "matched" → eClSkMat, read-only).
+        lines.append("  set foundTrack to false")
         lines.append("  repeat with t in sel")
         lines.append(f"    if persistent ID of t is {pid_lit} then")
         lines.append(f"      set name of t to {name_lit}")
         if change.new_track_number is not None:
             lines.append(f"      set track number of t to {change.new_track_number}")
-        lines.append("      set matched to true")
+        lines.append("      set foundTrack to true")
         lines.append("      exit repeat")
         lines.append("    end if")
         lines.append("  end repeat")
         lines.append(
-            '  if matched is false then error "Track no longer in selection"'
+            '  if foundTrack is false then error "Track no longer in selection"'
         )
     lines.append("end tell")
     run_osascript("\n".join(lines))
