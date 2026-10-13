@@ -11,6 +11,7 @@ from enum import Enum
 from typing import Literal
 
 PREFIX_RE = re.compile(r"^\s*(\d+)\s*(?:\.|-)\s*")
+TRAILING_ID_RE = re.compile(r"\s+\d{8,}$")
 SPACE_RE = re.compile(r" {2,}")
 
 
@@ -66,6 +67,10 @@ def find_replace(name: str, find: str, replace: str) -> str:
     return pattern.sub(replace, name)
 
 
+def strip_trailing_download_id(name: str) -> str:
+    return clean_spaces(TRAILING_ID_RE.sub("", name))
+
+
 def plan_strip(
     tracks: list[Track],
     *,
@@ -110,6 +115,18 @@ def plan_find_replace(
     planned: list[PlannedChange] = []
     for track in tracks:
         new_name = find_replace(track.name, find, replace)
+        if new_name == track.name:
+            continue
+        planned.append(
+            PlannedChange(track=track, new_name=new_name, new_track_number=None)
+        )
+    return planned
+
+
+def plan_strip_trailing_id(tracks: list[Track]) -> list[PlannedChange]:
+    planned: list[PlannedChange] = []
+    for track in tracks:
+        new_name = strip_trailing_download_id(track.name)
         if new_name == track.name:
             continue
         planned.append(
@@ -340,7 +357,19 @@ def run_find_replace(tracks: list[Track]) -> None:
     print("Done.")
 
 
-MenuAction = Literal["1", "2", "3", "q"]
+def run_strip_trailing_id(tracks: list[Track]) -> None:
+    changes = plan_strip_trailing_id(tracks)
+    print_preview(changes)
+    if not changes:
+        return
+    if not confirm("Apply"):
+        print("Cancelled.")
+        return
+    apply_changes(changes)
+    print("Done.")
+
+
+MenuAction = Literal["1", "2", "3", "4", "q"]
 
 
 def main() -> None:
@@ -363,16 +392,28 @@ def main() -> None:
     print("1) Strip leading number from title → track number field")
     print("2) Remove whole word/phrase from titles")
     print("3) Find/replace in titles")
+    print("4) Strip trailing download ID from titles")
     print("q) Quit")
-    action = prompt_choice("Action", {"1": "strip", "2": "remove", "3": "replace", "q": "quit"})
+    action = prompt_choice(
+        "Action",
+        {
+            "1": "strip",
+            "2": "remove",
+            "3": "replace",
+            "4": "strip-id",
+            "q": "quit",
+        },
+    )
     if action == "q":
         return
     if action == "1":
         run_strip(tracks)
     elif action == "2":
         run_remove_word(tracks)
-    else:
+    elif action == "3":
         run_find_replace(tracks)
+    else:
+        run_strip_trailing_id(tracks)
 
 
 if __name__ == "__main__":

@@ -30,6 +30,9 @@ Case-insensitive. `live` removes the word `Live`, not the letters inside `Alive`
 **Find/replace**  
 Case-insensitive substring replace across selected titles.
 
+**Strip trailing download ID**  
+Drops a final space plus a long digit run (8+ digits), the kind yt-dlp often leaves on import titles. Years like `1998` mid-title stay put.
+
 Edits are matched by each track's persistent ID, so changing the selection mid-run won't silently retarget the wrong songs.
 
 ## License
