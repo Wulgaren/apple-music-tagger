@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+import unicodedata
 from dataclasses import dataclass
 from enum import Enum
 from typing import Literal
@@ -13,6 +14,9 @@ from typing import Literal
 PREFIX_RE = re.compile(r"^\s*(\d+)\s*(?:\.|-)\s*")
 TRAILING_ID_RE = re.compile(r"\s+\d{8,}$")
 SPACE_RE = re.compile(r" {2,}")
+ENTRY_NUMBER_ONLY_RE = re.compile(r"^\s*(\d{1,3})\s*[.)]?\s*$")
+ENTRY_INLINE_RE = re.compile(r"^\s*(\d{1,3})\s*(?:[.)]|[-–—])\s+(.+?)\s*$")
+DURATION_RE = re.compile(r"\s*[(\[]?\d{1,3}:\d{2}(?::\d{2})?[)\]]?\s*$")
 
 
 @dataclass(frozen=True)
@@ -34,6 +38,13 @@ class ConflictPolicy(Enum):
     OVERWRITE = "overwrite"
     KEEP = "keep"
     SKIP = "skip"
+
+
+POLICY_BY_CHOICE = {
+    "o": ConflictPolicy.OVERWRITE,
+    "k": ConflictPolicy.KEEP,
+    "s": ConflictPolicy.SKIP,
+}
 
 
 def clean_spaces(text: str) -> str:
@@ -69,6 +80,105 @@ def find_replace(name: str, find: str, replace: str) -> str:
 
 def strip_trailing_download_id(name: str) -> str:
     return clean_spaces(TRAILING_ID_RE.sub("", name))
+
+
+@dataclass(frozen=True)
+class TracklistEntry:
+    number: int
+    title: str
+
+
+def strip_duration(title: str) -> str:
+    return clean_spaces(DURATION_RE.sub("", title))
+
+
+def parse_tracklist(raw: str) -> list[TracklistEntry]:
+    """Parse pasted tracklists like "1.\\nTitle 03:36" or "1. Title 03:36"."""
+    entries: list[TracklistEntry] = []
+    pending_number: int | None = None
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        number_only = ENTRY_NUMBER_ONLY_RE.match(line)
+        if number_only is not None:
+            if pending_number is not None:
+                raise ValueError(f"track number {pending_number} has no title")
+            pending_number = int(number_only.group(1))
+            continue
+        inline = ENTRY_INLINE_RE.match(line)
+        if inline is not None:
+            if pending_number is not None:
+                raise ValueError(f"track number {pending_number} has no title")
+            entries.append(
+                TracklistEntry(
+                    number=int(inline.group(1)),
+                    title=strip_duration(inline.group(2)),
+                )
+            )
+            continue
+        if pending_number is None:
+            raise ValueError(f"unexpected line in tracklist: {line!r}")
+        entries.append(
+            TracklistEntry(number=pending_number, title=strip_duration(line))
+        )
+        pending_number = None
+    if pending_number is not None:
+        raise ValueError(f"track number {pending_number} has no title")
+    return entries
+
+
+def normalize_title(title: str) -> str:
+    folded = unicodedata.normalize("NFKD", title).casefold()
+    return re.sub(r"[^a-z0-9]+", "", folded)
+
+
+def match_tracklist(
+    tracks: list[Track], entries: list[TracklistEntry]
+) -> tuple[
+    list[tuple[TracklistEntry, Track]],
+    list[TracklistEntry],
+    list[tuple[TracklistEntry, list[Track]]],
+]:
+    by_title: dict[str, list[Track]] = {}
+    for track in tracks:
+        key = normalize_title(track.name)
+        if key:
+            by_title.setdefault(key, []).append(track)
+    matches: list[tuple[TracklistEntry, Track]] = []
+    missing: list[TracklistEntry] = []
+    ambiguous: list[tuple[TracklistEntry, list[Track]]] = []
+    used: set[str] = set()
+    for entry in entries:
+        candidates = [
+            track
+            for track in by_title.get(normalize_title(entry.title), [])
+            if track.persistent_id not in used
+        ]
+        if not candidates:
+            missing.append(entry)
+        elif len(candidates) > 1:
+            ambiguous.append((entry, candidates))
+        else:
+            used.add(candidates[0].persistent_id)
+            matches.append((entry, candidates[0]))
+    return matches, missing, ambiguous
+
+
+def plan_tracklist(
+    matches: list[tuple[TracklistEntry, Track]],
+    *,
+    policy: ConflictPolicy,
+) -> list[PlannedChange]:
+    planned: list[PlannedChange] = []
+    for entry, track in matches:
+        if track.track_number > 0 and policy is not ConflictPolicy.OVERWRITE:
+            continue
+        planned.append(
+            PlannedChange(
+                track=track, new_name=track.name, new_track_number=entry.number
+            )
+        )
+    return planned
 
 
 def plan_strip(
@@ -237,6 +347,20 @@ def prompt(message: str) -> str:
         raise SystemExit(1) from exc
 
 
+def read_tracklist_block() -> str:
+    print("Paste the tracklist, then press Enter on an empty line to finish.")
+    lines: list[str] = []
+    while True:
+        try:
+            line = input()
+        except EOFError:
+            break
+        if not line.strip():
+            break
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def prompt_choice(
     message: str, options: dict[str, str]
 ) -> str:
@@ -265,8 +389,11 @@ def print_preview(changes: list[PlannedChange]) -> None:
             tn_bit = f"track# {tn_before} (unchanged)"
         else:
             tn_bit = f"track# {tn_before} → {change.new_track_number}"
-        print(f"  [{change.track.index}] {before!r}")
-        print(f"       → {after!r}  ({tn_bit})")
+        if after == before:
+            print(f"  [{change.track.index}] {before!r}  ({tn_bit})")
+        else:
+            print(f"  [{change.track.index}] {before!r}")
+            print(f"       → {after!r}  ({tn_bit})")
     print()
 
 
@@ -301,11 +428,29 @@ def ask_conflict_policy(conflicts: list[Track]) -> ConflictPolicy:
             "s": "skip those tracks entirely",
         },
     )
-    return {
-        "o": ConflictPolicy.OVERWRITE,
-        "k": ConflictPolicy.KEEP,
-        "s": ConflictPolicy.SKIP,
-    }[choice]
+    return POLICY_BY_CHOICE[choice]
+
+
+def ask_tracklist_conflict_policy(
+    conflicts: list[tuple[TracklistEntry, Track]],
+) -> ConflictPolicy:
+    print(f"\n{len(conflicts)} track(s) already have a track number set:")
+    for entry, track in conflicts[:10]:
+        print(
+            f"  [{track.index}] track# {track.track_number}, "
+            f"tracklist wants {entry.number}: {track.name!r}"
+        )
+    if len(conflicts) > 10:
+        print(f"  … and {len(conflicts) - 10} more")
+    choice = prompt_choice(
+        "For those tracks",
+        {
+            "o": "overwrite with the tracklist number",
+            "k": "keep the existing track number",
+            "s": "skip those tracks",
+        },
+    )
+    return POLICY_BY_CHOICE[choice]
 
 
 def run_strip(tracks: list[Track]) -> None:
@@ -369,7 +514,45 @@ def run_strip_trailing_id(tracks: list[Track]) -> None:
     print("Done.")
 
 
-MenuAction = Literal["1", "2", "3", "4", "q"]
+def run_set_track_numbers(tracks: list[Track]) -> None:
+    raw = read_tracklist_block()
+    try:
+        entries = parse_tracklist(raw)
+    except ValueError as exc:
+        print(f"Could not read tracklist: {exc}")
+        return
+    if not entries:
+        print("No tracklist entries found.")
+        return
+    matches, missing, ambiguous = match_tracklist(tracks, entries)
+    print(f"\nMatched {len(matches)} of {len(entries)} tracklist entries.")
+    for entry in missing:
+        print(f"  ! no selected track matches {entry.title!r} (#{entry.number})")
+    for entry, candidates in ambiguous:
+        names = ", ".join(repr(track.name) for track in candidates)
+        print(f"  ! {entry.title!r} matches several selected tracks: {names}")
+    matched_ids = {track.persistent_id for _, track in matches}
+    for track in tracks:
+        if track.persistent_id not in matched_ids:
+            print(f"  ! selected track not in tracklist: {track.name!r}")
+    if not matches:
+        return
+    conflicts = [(entry, track) for entry, track in matches if track.track_number > 0]
+    policy = ConflictPolicy.OVERWRITE
+    if conflicts:
+        policy = ask_tracklist_conflict_policy(conflicts)
+    changes = plan_tracklist(matches, policy=policy)
+    print_preview(changes)
+    if not changes:
+        return
+    if not confirm("Apply"):
+        print("Cancelled.")
+        return
+    apply_changes(changes)
+    print("Done.")
+
+
+MenuAction = Literal["1", "2", "3", "4", "5", "q"]
 
 
 def main() -> None:
@@ -393,6 +576,7 @@ def main() -> None:
     print("2) Remove whole word/phrase from titles")
     print("3) Find/replace in titles")
     print("4) Strip trailing download ID from titles")
+    print("5) Set track numbers from a pasted tracklist")
     print("q) Quit")
     action = prompt_choice(
         "Action",
@@ -401,6 +585,7 @@ def main() -> None:
             "2": "remove",
             "3": "replace",
             "4": "strip-id",
+            "5": "tracklist",
             "q": "quit",
         },
     )
@@ -412,8 +597,10 @@ def main() -> None:
         run_remove_word(tracks)
     elif action == "3":
         run_find_replace(tracks)
-    else:
+    elif action == "4":
         run_strip_trailing_id(tracks)
+    else:
+        run_set_track_numbers(tracks)
 
 
 if __name__ == "__main__":

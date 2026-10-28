@@ -24,6 +24,18 @@ python3 music_tags.py
 **Strip leading number → track number field**  
 Pulls prefixes like `01.`, `1.`, `01 -`, or `1 -` off the title and writes the number into Music's track number field. Leftover spaces are trimmed. If some tracks already have a track number, you're asked once for the whole batch: overwrite, keep the existing number (still strip the title), or skip those tracks.
 
+**Set track numbers from a pasted tracklist**  
+Paste a tracklist like:
+
+```
+1.
+Call This Number 03:36
+2.
+Dada's Boys 05:03
+```
+
+or `1. Call This Number 03:36` on one line. Durations are ignored. Each entry is matched to a selected track by title (case-insensitive, punctuation and spacing ignored), so selection order doesn't matter. Unmatched entries, ambiguous titles, and selected tracks missing from the tracklist are reported before you confirm. Existing track numbers get the same overwrite/keep/skip choice.
+
 **Remove whole word/phrase**  
 Case-insensitive. `live` removes the word `Live`, not the letters inside `Alive`.
 
