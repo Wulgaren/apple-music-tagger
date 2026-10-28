@@ -45,6 +45,10 @@ Case-insensitive substring replace across selected titles.
 **Strip trailing download ID**  
 Drops a final space plus a long digit run (8+ digits), the kind yt-dlp often leaves on import titles. Years like `1998` mid-title stay put.
 
+**Title-case titles**
+
+Chicago/AP-style capitalization: major words are capitalized while short articles, conjunctions, and prepositions (`a`, `and`, `of`, `the`, `to`, and the like) stay lowercase in the middle of a title. The first and last words always get capitals, as does the first word after a colon, semicolon, dash, or question/exclamation mark. Acronyms and deliberate mixed-case styling such as `DJ`, `R&B`, and `iPhone` are left alone.
+
 Edits are matched by each track's persistent ID, so changing the selection mid-run won't silently retarget the wrong songs.
 
 ## License

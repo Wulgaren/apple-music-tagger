@@ -17,6 +17,38 @@ SPACE_RE = re.compile(r" {2,}")
 ENTRY_NUMBER_ONLY_RE = re.compile(r"^\s*(\d{1,3})\s*[.)]?\s*$")
 ENTRY_INLINE_RE = re.compile(r"^\s*(\d{1,3})\s*(?:[.)]|[-–—])\s+(.+?)\s*$")
 DURATION_RE = re.compile(r"\s*[(\[]?\d{1,3}:\d{2}(?::\d{2})?[)\]]?\s*$")
+WORD_RE = re.compile(r"[^\W_]+(?:['’][^\W_]+)*")
+
+TITLE_CASE_SMALL_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "and",
+        "but",
+        "or",
+        "nor",
+        "for",
+        "so",
+        "yet",
+        "as",
+        "at",
+        "by",
+        "etc",
+        "in",
+        "n",
+        "of",
+        "off",
+        "on",
+        "out",
+        "per",
+        "to",
+        "up",
+        "via",
+    }
+)
+TITLE_BREAK_CHARS = frozenset(":;?!—–")
+APOSTROPHE_NAME_PREFIXES = frozenset({"d", "l", "o"})
 
 
 @dataclass(frozen=True)
@@ -80,6 +112,66 @@ def find_replace(name: str, find: str, replace: str) -> str:
 
 def strip_trailing_download_id(name: str) -> str:
     return clean_spaces(TRAILING_ID_RE.sub("", name))
+
+
+def _is_protected_word(word: str) -> bool:
+    """Keep acronyms and deliberate mixed case (DJ, R&B, iPhone, McDonald)."""
+    letters = [char for char in word if char.isalpha()]
+    if len(letters) < 2 or word.casefold() in TITLE_CASE_SMALL_WORDS:
+        return False
+    if all(char.isupper() for char in letters):
+        return len(letters) <= 4
+    return any(char.isupper() for char in letters[1:])
+
+
+def _capitalize_word(word: str) -> str:
+    lowered = word.lower()
+    if not lowered[0].isalpha():
+        return lowered
+    if len(lowered) >= 3 and lowered[0] in APOSTROPHE_NAME_PREFIXES:
+        if lowered[1] in "'’":
+            return lowered[0].upper() + lowered[1] + lowered[2].upper() + lowered[3:]
+    return lowered[0].upper() + lowered[1:]
+
+
+def _title_case_word(word: str, *, capitalize: bool) -> str:
+    if not capitalize and word.casefold() in TITLE_CASE_SMALL_WORDS:
+        return word.lower()
+    if _is_protected_word(word):
+        return word
+    return _capitalize_word(word)
+
+
+def _follows_title_break(text: str, start: int) -> bool:
+    index = start - 1
+    while index >= 0 and text[index].isspace():
+        index -= 1
+    return index >= 0 and text[index] in TITLE_BREAK_CHARS
+
+
+def title_case(text: str) -> str:
+    """Chicago/AP-style title case, preserving acronyms and mixed-case styling."""
+    matches = list(WORD_RE.finditer(text))
+    if not matches:
+        return clean_spaces(text)
+    pieces: list[str] = []
+    cursor = 0
+    last_index = len(matches) - 1
+    for index, match in enumerate(matches):
+        pieces.append(text[cursor : match.start()])
+        pieces.append(
+            _title_case_word(
+                match.group(),
+                capitalize=(
+                    index == 0
+                    or index == last_index
+                    or _follows_title_break(text, match.start())
+                ),
+            )
+        )
+        cursor = match.end()
+    pieces.append(text[cursor:])
+    return clean_spaces("".join(pieces))
 
 
 @dataclass(frozen=True)
@@ -237,6 +329,18 @@ def plan_strip_trailing_id(tracks: list[Track]) -> list[PlannedChange]:
     planned: list[PlannedChange] = []
     for track in tracks:
         new_name = strip_trailing_download_id(track.name)
+        if new_name == track.name:
+            continue
+        planned.append(
+            PlannedChange(track=track, new_name=new_name, new_track_number=None)
+        )
+    return planned
+
+
+def plan_title_case(tracks: list[Track]) -> list[PlannedChange]:
+    planned: list[PlannedChange] = []
+    for track in tracks:
+        new_name = title_case(track.name)
         if new_name == track.name:
             continue
         planned.append(
@@ -514,6 +618,18 @@ def run_strip_trailing_id(tracks: list[Track]) -> None:
     print("Done.")
 
 
+def run_title_case(tracks: list[Track]) -> None:
+    changes = plan_title_case(tracks)
+    print_preview(changes)
+    if not changes:
+        return
+    if not confirm("Apply"):
+        print("Cancelled.")
+        return
+    apply_changes(changes)
+    print("Done.")
+
+
 def run_set_track_numbers(tracks: list[Track]) -> None:
     raw = read_tracklist_block()
     try:
@@ -552,7 +668,7 @@ def run_set_track_numbers(tracks: list[Track]) -> None:
     print("Done.")
 
 
-MenuAction = Literal["1", "2", "3", "4", "5", "q"]
+MenuAction = Literal["1", "2", "3", "4", "5", "6", "q"]
 
 
 def main() -> None:
@@ -577,6 +693,7 @@ def main() -> None:
     print("3) Find/replace in titles")
     print("4) Strip trailing download ID from titles")
     print("5) Set track numbers from a pasted tracklist")
+    print("6) Title-case titles")
     print("q) Quit")
     action = prompt_choice(
         "Action",
@@ -586,6 +703,7 @@ def main() -> None:
             "3": "replace",
             "4": "strip-id",
             "5": "tracklist",
+            "6": "title-case",
             "q": "quit",
         },
     )
@@ -599,8 +717,10 @@ def main() -> None:
         run_find_replace(tracks)
     elif action == "4":
         run_strip_trailing_id(tracks)
-    else:
+    elif action == "5":
         run_set_track_numbers(tracks)
+    else:
+        run_title_case(tracks)
 
 
 if __name__ == "__main__":
